@@ -23,7 +23,14 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    hf_token = os.environ.get("HF_API_TOKEN")
+    groq_key = os.environ.get("GROQ_API_KEY")
+    return {
+        "status": "ok",
+        "hf_token_present": bool(hf_token),
+        "hf_token_length": len(hf_token) if hf_token else 0,
+        "groq_key_present": bool(groq_key),
+    }
 
 
 @app.post("/summarize", response_model=SummarizeResponse)
