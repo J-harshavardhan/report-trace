@@ -1,10 +1,10 @@
 import os
 import json
-from anthropic import Anthropic
+import requests
 
-client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
-MODEL = os.environ.get("SUMMARY_MODEL", "claude-sonnet-4-6")
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+MODEL = os.environ.get("SUMMARY_MODEL", "llama-3.3-70b-versatile")
 
 SYSTEM_PROMPT = """You are a clinical summarization assistant. You will be given the
 raw text of a medical report (lab results, discharge summary, radiology
@@ -30,19 +30,28 @@ def summarize_report(report_text: str, max_sentences: int = 8) -> list[str]:
         f"--- REPORT START ---\n{report_text}\n--- REPORT END ---"
     )
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1024,
+        "response_format": {"type": "json_object"},
+    }
 
-    raw = response.content[0].text.strip()
+    resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=30)
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
     try:
         parsed = json.loads(raw)
         return parsed["summary_sentences"]
     except (json.JSONDecodeError, KeyError):
-        # Fallback: treat the raw output as newline-separated sentences
         return [line.strip("- ").strip() for line in raw.splitlines() if line.strip()]
