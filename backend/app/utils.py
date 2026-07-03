@@ -31,8 +31,11 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
 def split_sentences(text: str):
     """Lightweight regex sentence splitter -- avoids a runtime download of
     nltk's punkt model, which is a bad fit for a serverless cold start."""
-    text = " ".join(text.split())
-    raw_sentences = _SENTENCE_SPLIT_RE.split(text)
+    # Split by newlines first to preserve paragraph boundaries, then by sentence regex
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    raw_sentences = []
+    for line in lines:
+        raw_sentences.extend(_SENTENCE_SPLIT_RE.split(line))
 
     sentences = []
     buffer = ""

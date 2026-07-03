@@ -1,7 +1,7 @@
 # Report Trace — AI Medical Report Summarizer with Hallucination Detection
 ### (Vercel-deployable version)
 
-Summarizes medical reports with Claude, then verifies every summary sentence
+Summarizes medical reports with Groq (Llama 3), then verifies every summary sentence
 against the source document before showing it to the user, using a two-tier
 independent check rather than trusting the LLM's output wholesale.
 
@@ -17,7 +17,7 @@ download, no `torch` dependency.
 report (PDF or text)
         │
         ▼
- 1. Summarizer (Claude API)
+ 1. Summarizer (Groq API)
     → produces N discrete summary sentences (not one paragraph)
         │
         ▼
@@ -49,7 +49,7 @@ report-trace/
   backend/
     main.py                    FastAPI app (Vercel entrypoint)
     app/
-      summarizer.py             Claude API call, structured sentence output
+      summarizer.py             Groq API call, structured sentence output
       hallucination_detector.py TF-IDF retrieval + HF Inference API + entity check
       utils.py                  PDF extraction, regex sentence splitter, entity regex
       schemas.py                Pydantic request/response models
@@ -78,9 +78,9 @@ debugged on its own.
 - In Vercel: **New Project** → import the repo → set **Root Directory** to `backend`.
 - Vercel auto-detects the FastAPI/Python framework from `requirements.txt` + `main.py`.
 - Add environment variables in the project's Settings → Environment Variables:
-  - `ANTHROPIC_API_KEY` — your Claude API key
+  - `GROQ_API_KEY` — your Groq API key (get one at [console.groq.com](https://console.groq.com))
   - `HF_API_TOKEN` — a free Hugging Face access token ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens), "Read" scope is enough)
-  - `SUMMARY_MODEL` (optional, defaults to `claude-sonnet-4-6`)
+  - `SUMMARY_MODEL` (optional, defaults to `llama-3.3-70b-versatile`)
   - `NLI_MODEL` (optional, defaults to the DeBERTa-v3 MNLI model)
   - `FRONTEND_ORIGIN` — set once you know it, e.g. `https://report-trace.vercel.app` (leave unset / `*` while testing)
 - Deploy. Note the resulting URL, e.g. `https://report-trace-api.vercel.app`.
@@ -105,7 +105,7 @@ rather than failing the whole request; the entity check still runs.
 cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in ANTHROPIC_API_KEY and HF_API_TOKEN
+cp .env.example .env   # fill in GROQ_API_KEY and HF_API_TOKEN
 python main.py          # runs on http://localhost:8000
 
 # frontend (separate terminal)
