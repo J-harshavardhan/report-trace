@@ -3,25 +3,26 @@ Hallucination detection for the medical report summarizer.
 
 Two-tier check applied to every summary sentence:
 
-  Tier 1 - Entailment (NLI): retrieve the most relevant sentences from the
-  source report via TF-IDF cosine similarity, then call a hosted NLI model
-  through the Hugging Face Inference API to check whether that source
-  evidence entails the summary sentence. Using a hosted model (instead of
-  loading transformers/torch in-process) is what keeps this backend small
-  enough to run as a Vercel serverless function.
+  Tier 1 - Entailment check: retrieve the most relevant sentences from the
+  source report via TF-IDF cosine similarity, then ask a small, fast LLM
+  (via Groq) a narrow, structured question -- does this specific evidence
+  sentence support this specific summary sentence? This call is deliberately
+  isolated from the original summarization prompt/context, so it can't just
+  rubber-stamp its own prior output.
 
   Tier 2 - Entity verification: extract high-stakes entities (dosages, lab
   values, vitals, dates) from the summary sentence and confirm each one
   appears verbatim (or near-verbatim) in the source. Numbers are the most
   dangerous class of hallucination in a medical setting, so they get a
-  dedicated, stricter check rather than relying on the NLI model alone.
+  dedicated, stricter, model-free check rather than relying on the LLM call
+  alone.
 
 The two signals are combined into a single label: supported / partial /
 unsupported.
 """
 
 import os
-import time
+import json
 from typing import List
 
 import requests
@@ -31,15 +32,29 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .utils import extract_entities, split_sentences
 from .schemas import ClaimVerdict
 
-HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
-NLI_MODEL = os.environ.get("NLI_MODEL", "cross-encoder/nli-deberta-v3-base")
-HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{NLI_MODEL}"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+VERIFIER_MODEL = os.environ.get("VERIFIER_MODEL", "llama-3.1-8b-instant")
 
 ENTAILMENT_SUPPORTED = 0.60
 ENTAILMENT_PARTIAL = 0.35
 TOP_K_EVIDENCE = 3
-MAX_RETRIES = 3
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 20
+
+VERIFIER_SYSTEM_PROMPT = """You are a strict fact-checker. You will be given
+a SOURCE sentence and a CLAIM sentence. Decide whether the SOURCE sentence
+entails (fully supports) the CLAIM.
+
+Return ONLY valid JSON, no preamble, no markdown fences, in this exact shape:
+{"entailment_score": <float between 0.0 and 1.0>}
+
+Scoring guide:
+- 1.0: the SOURCE directly and fully supports the CLAIM
+- 0.5: the SOURCE partially supports the CLAIM, or supports it with a
+  different emphasis/wording that changes meaning slightly
+- 0.0: the SOURCE does not support the CLAIM, or the CLAIM contains
+  information not present in the SOURCE
+"""
 
 
 def _retrieve_evidence(summary_sentence: str, source_sentences: List[str], k: int = TOP_K_EVIDENCE):
@@ -54,42 +69,35 @@ def _retrieve_evidence(summary_sentence: str, source_sentences: List[str], k: in
 
 
 def _entailment_score(premise: str, hypothesis: str) -> float:
-    """Calls the Hugging Face Inference API for the NLI model. Degrades to
-    0.0 (relies entirely on the entity check) if no token is configured or
-    the API is unreachable, rather than failing the whole request."""
-    if not HF_API_TOKEN:
+    """Calls a small Groq model to independently judge entailment. Degrades
+    to 0.0 (relies entirely on the entity check) on any failure, rather than
+    failing the whole request."""
+    if not GROQ_API_KEY:
         return 0.0
 
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    payload = {"inputs": {"text": premise, "text_pair": hypothesis}}
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": VERIFIER_MODEL,
+        "messages": [
+            {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
+            {"role": "user", "content": f"SOURCE: {premise}\n\nCLAIM: {hypothesis}"},
+        ],
+        "temperature": 0,
+        "max_tokens": 50,
+        "response_format": {"type": "json_object"},
+    }
 
-    for _ in range(MAX_RETRIES):
-        try:
-            resp = requests.post(HF_API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
-        except requests.RequestException:
-            return 0.0
-
-        if resp.status_code == 200:
-            data = resp.json()
-            scores_list = data[0] if (isinstance(data, list) and data and isinstance(data[0], list)) else data
-            if not isinstance(scores_list, list):
-                return 0.0
-            scores = {item.get("label", "").lower(): item.get("score", 0.0) for item in scores_list}
-            return scores.get("entailment", 0.0)
-
-        if resp.status_code == 503:
-            # Free-tier model is cold-starting on HF's side; wait and retry.
-            wait_seconds = 5
-            try:
-                wait_seconds = min(resp.json().get("estimated_time", 5), 10)
-            except ValueError:
-                pass
-            time.sleep(wait_seconds)
-            continue
-
-        return 0.0  # any other error: don't block the whole report on it
-
-    return 0.0
+    try:
+        resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        parsed = json.loads(raw)
+        return float(parsed.get("entailment_score", 0.0))
+    except Exception:
+        return 0.0
 
 
 def _check_entities(sentence: str, source_text: str) -> List[str]:
@@ -119,8 +127,6 @@ def verify_summary(summary_sentences: List[str], source_text: str) -> List[Claim
 
         missing_entities = _check_entities(sentence, source_text)
 
-        # A missing high-stakes entity (wrong/invented number, dose, date)
-        # overrides the entailment score -- it's flagged regardless.
         if missing_entities:
             label = "unsupported"
         elif best_score >= ENTAILMENT_SUPPORTED:
