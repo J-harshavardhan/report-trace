@@ -70,6 +70,27 @@ def debug_verify():
     }
 
 
+@app.get("/debug_hf_raw")
+def debug_hf_raw():
+    import requests as req
+    hf_token = os.environ.get("HF_API_TOKEN")
+    nli_model = os.environ.get("NLI_MODEL", "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli")
+    url = f"https://api-inference.huggingface.co/models/{nli_model}"
+
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    payload = {"inputs": {"text": "The sky is blue.", "text_pair": "The sky has a blue color."}}
+
+    try:
+        resp = req.post(url, headers=headers, json=payload, timeout=15)
+        return {
+            "status_code": resp.status_code,
+            "response_body": resp.text[:2000],
+            "url_called": url,
+        }
+    except Exception as e:
+        return {"exception": f"{type(e).__name__}: {e}"}
+
+
 @app.post("/summarize", response_model=SummarizeResponse)
 async def summarize(
     file: UploadFile = File(None),
