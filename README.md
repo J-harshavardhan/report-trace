@@ -1,4 +1,14 @@
-# Report Trace — AI Medical Report Summarizer with Hallucination Detection
+# Report Trace
+### AI-Powered Medical Report Summarizer with Hallucination Detection
+
+<p>
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB" alt="React">
+  <img src="https://img.shields.io/badge/Vite-646CFF?style=flat&logo=vite&logoColor=white" alt="Vite">
+  <img src="https://img.shields.io/badge/LLM-Groq%20%2F%20Llama%203-F55036?style=flat" alt="Groq">
+  <img src="https://img.shields.io/badge/scikit--learn-F7931E?style=flat&logo=scikitlearn&logoColor=white" alt="scikit-learn">
+  <img src="https://img.shields.io/badge/Deployed%20on-Vercel-000000?style=flat&logo=vercel&logoColor=white" alt="Vercel">
+</p>
 
 **Live app:** https://report-trace-17ah.vercel.app
 **Backend API:** https://report-trace-upy2.vercel.app
@@ -7,6 +17,8 @@ Summarizes medical reports (pasted text or PDF) with an LLM, then verifies
 every summary sentence against the source document before showing it to the
 user, using a two-tier independent check rather than trusting the LLM's
 output wholesale.
+
+---
 
 ## Why hallucination detection matters here
 
@@ -17,29 +29,21 @@ than trusting the LLM's raw output.
 
 ## Architecture
 
-```
-report (PDF or text)
-        │
-        ▼
- 1. Summarizer (Groq — Llama 3.3 70B)
-    → produces N discrete summary sentences (not one paragraph)
-        │
-        ▼
- 2. Hallucination Detector — per summary sentence:
-    a) Retrieval: TF-IDF cosine similarity (scikit-learn, in-process) picks
-       the top-3 most relevant sentences from the source report
-    b) Entailment: a second, separate Groq call (Llama 3.1 8B Instant) is
-       asked a narrow, structured question — does this specific evidence
-       sentence support this specific claim? This call never sees the
-       original summarization prompt, so it can't just rubber-stamp its
-       own prior output.
-    c) Entity check: dosages, lab values, vitals, and dates are extracted
-       via regex and must appear verbatim in the source — this overrides
-       the entailment score, since numbers are the highest-risk hallucination
-        │
-        ▼
- 3. Verdict per sentence: supported / partial / unsupported
-    + overall confidence score for the whole report
+```mermaid
+flowchart TD
+    A["Medical Report (PDF or text)"] --> B["Summarizer — Groq Llama 3.3 70B"]
+    B --> C["N discrete summary sentences"]
+    C --> D["TF-IDF Retrieval — top-3 matching source sentences"]
+    D --> E["Entailment Check — isolated Groq Llama 3.1 8B call"]
+    C --> F["Entity Check — regex: dosages, dates, vitals, labs"]
+    E --> G{"Combine signals"}
+    F --> G
+    G --> H["supported"]
+    G --> I["partial"]
+    G --> J["unsupported"]
+    H --> K["Per-sentence verdict + overall confidence score"]
+    I --> K
+    J --> K
 ```
 
 **Why two tiers instead of just asking the LLM to self-check?** Asking a
@@ -49,17 +53,31 @@ check is pure string matching with no model involved at all, and the
 entailment check is a structurally separate call with no memory of the
 summarization step. That independence is the point.
 
-**Note on the entailment model:** this originally used a dedicated NLI
-model (DeBERTa-v3) hosted on Hugging Face's free Inference API. That
-service was deprecated mid-project (the old `api-inference.huggingface.co`
-endpoint stopped resolving, and the replacement `router.huggingface.co`
-doesn't host small classification models reliably on the free tier) — so
-the entailment check was switched to a second, isolated Groq call instead.
-This is a legitimate and common alternative technique, but it's worth
-being upfront that it's not the same as a purpose-built, independently
-trained NLI classifier — both calls ultimately run on Llama models, even
-though the prompts, context, and roles are fully separate. See "For the
-viva" below for how to talk about this tradeoff.
+> **Note on the entailment model:** this originally used a dedicated NLI
+> model (DeBERTa-v3) hosted on Hugging Face's free Inference API. That
+> service was deprecated mid-project (the old `api-inference.huggingface.co`
+> endpoint stopped resolving, and its replacement doesn't host small
+> classification models reliably on the free tier) — so the entailment
+> check was switched to a second, isolated Groq call instead. See
+> [For the viva](#extending-this-for-the-viva) for how to talk about this
+> tradeoff honestly.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><b>Pasted-text summary — 94% confidence</b></td>
+    <td align="center"><b>PDF upload — 100% confidence</b></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/discharge-summary-result.png" width="400"></td>
+    <td><img src="screenshots/pdf-upload-result.png" width="400"></td>
+  </tr>
+</table>
+
+*(Add your own screenshots to a `screenshots/` folder in the repo — the
+discharge-summary test and the PDF-upload test both make good examples,
+since they show partial/unsupported flags catching real edge cases.)*
 
 ## Project structure — two separate Vercel projects
 
@@ -93,10 +111,12 @@ entirely and lets each half be redeployed or debugged independently.
 ### 1. Backend
 - Vercel → **New Project** → import this repo → **Root Directory** = `backend`
 - Environment variables:
-  - `GROQ_API_KEY` — free at console.groq.com (no card required)
-  - `FRONTEND_ORIGIN` — set to your frontend's URL once deployed (step 2), for CORS
-  - `VERIFIER_MODEL` (optional, defaults to `llama-3.1-8b-instant`)
-  - `SUMMARY_MODEL` (optional, defaults to `llama-3.3-70b-versatile`)
+  | Key | Value |
+  |---|---|
+  | `GROQ_API_KEY` | free at console.groq.com (no card required) |
+  | `FRONTEND_ORIGIN` | your frontend's URL once deployed (step 2), for CORS |
+  | `VERIFIER_MODEL` | optional, defaults to `llama-3.1-8b-instant` |
+  | `SUMMARY_MODEL` | optional, defaults to `llama-3.3-70b-versatile` |
 - **Deployment Protection** must be turned off (Settings → Deployment
   Protection → "Require Log In" → off), otherwise the frontend's requests
   get redirected to a login page instead of reaching the API.
