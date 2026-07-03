@@ -33,6 +33,43 @@ def health():
     }
 
 
+@app.get("/debug_verify")
+def debug_verify():
+    from app.hallucination_detector import _retrieve_evidence, _entailment_score, HF_API_TOKEN
+    from app.utils import split_sentences
+
+    source_text = (
+        "Patient: Test Patient. Age 45. "
+        "Blood pressure 130/85 mmHg recorded on 15/06/2026. "
+        "Prescribed Metformin 500mg twice daily. "
+        "Lab results show HbA1c of 7.2%. "
+        "Patient reports mild fatigue, no chest pain."
+    )
+    summary_sentence = "The patient's blood pressure was recorded as 130/85 mmHg on 15/06/2026."
+
+    source_sentences = split_sentences(source_text)
+    evidence_candidates = _retrieve_evidence(summary_sentence, source_sentences)
+
+    hf_call_result = None
+    hf_call_error = None
+    if evidence_candidates:
+        try:
+            hf_call_result = _entailment_score(evidence_candidates[0], summary_sentence)
+        except Exception as e:
+            hf_call_error = f"{type(e).__name__}: {e}"
+
+    return {
+        "hf_token_present": bool(HF_API_TOKEN),
+        "hf_token_length": len(HF_API_TOKEN) if HF_API_TOKEN else 0,
+        "source_sentences_count": len(source_sentences),
+        "source_sentences": source_sentences,
+        "evidence_candidates_count": len(evidence_candidates),
+        "evidence_candidates": evidence_candidates,
+        "hf_call_result": hf_call_result,
+        "hf_call_error": hf_call_error,
+    }
+
+
 @app.post("/summarize", response_model=SummarizeResponse)
 async def summarize(
     file: UploadFile = File(None),
