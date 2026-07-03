@@ -33,7 +33,7 @@ from .schemas import ClaimVerdict
 
 HF_API_TOKEN = os.environ.get("HF_API_TOKEN")
 NLI_MODEL = os.environ.get("NLI_MODEL", "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli")
-HF_API_URL = f"https://api-inference.huggingface.co/models/{NLI_MODEL}"
+HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{NLI_MODEL}"
 
 ENTAILMENT_SUPPORTED = 0.60
 ENTAILMENT_PARTIAL = 0.35
