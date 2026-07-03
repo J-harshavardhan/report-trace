@@ -11,8 +11,6 @@ from app.utils import extract_text_from_pdf, clean_text
 
 app = FastAPI(title="AI Medical Report Summarizer with Hallucination Detection")
 
-# Allow the deployed frontend origin (set FRONTEND_ORIGIN in Vercel project
-# settings once you have the frontend URL; * is fine while developing).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.environ.get("FRONTEND_ORIGIN", "*")],
@@ -75,7 +73,7 @@ def debug_hf_raw():
     import requests as req
     hf_token = os.environ.get("HF_API_TOKEN")
     nli_model = os.environ.get("NLI_MODEL", "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli")
-    url = f"https://api-inference.huggingface.co/models/{nli_model}"
+    url = f"https://router.huggingface.co/hf-inference/models/{nli_model}"
 
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {"inputs": {"text": "The sky is blue.", "text_pair": "The sky has a blue color."}}
@@ -131,6 +129,5 @@ async def summarize(
 
 
 if __name__ == "__main__":
-    # Local dev only -- Vercel invokes `app` directly, it doesn't run this.
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
