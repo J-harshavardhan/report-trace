@@ -1,15 +1,19 @@
 # Report Trace — AI Medical Report Summarizer with Hallucination Detection
-### (Vercel-deployable version)
 
-Summarizes medical reports with Groq (Llama 3), then verifies every summary sentence
-against the source document before showing it to the user, using a two-tier
-independent check rather than trusting the LLM's output wholesale.
+**Live app:** https://report-trace-17ah.vercel.app
+**Backend API:** https://report-trace-upy2.vercel.app
 
-This version is restructured to deploy fully on Vercel: the original design
-loaded a ~500MB NLI model locally via `torch`/`transformers`, which doesn't
-fit in a Vercel serverless function. Here the same entailment check runs
-through the **Hugging Face Inference API** instead — a hosted call, no model
-download, no `torch` dependency.
+Summarizes medical reports (pasted text or PDF) with an LLM, then verifies
+every summary sentence against the source document before showing it to the
+user, using a two-tier independent check rather than trusting the LLM's
+output wholesale.
+
+## Why hallucination detection matters here
+
+LLM summarizers occasionally invent or distort details. In a medical report
+that's not a cosmetic bug — a wrong dosage or lab value is dangerous. This
+project treats the summary as a set of individually-checkable claims rather
+than trusting the LLM's raw output.
 
 ## Architecture
 
@@ -17,16 +21,18 @@ download, no `torch` dependency.
 report (PDF or text)
         │
         ▼
- 1. Summarizer (Groq API)
+ 1. Summarizer (Groq — Llama 3.3 70B)
     → produces N discrete summary sentences (not one paragraph)
         │
         ▼
  2. Hallucination Detector — per summary sentence:
-    a) Retrieval: TF-IDF cosine similarity picks the top-3 most relevant
-       sentences from the source report (scikit-learn, in-process)
-    b) Entailment: a hosted NLI model (DeBERTa-v3, MNLI+FEVER+ANLI
-       fine-tune) scores whether that evidence entails the summary
-       sentence, called via the Hugging Face Inference API
+    a) Retrieval: TF-IDF cosine similarity (scikit-learn, in-process) picks
+       the top-3 most relevant sentences from the source report
+    b) Entailment: a second, separate Groq call (Llama 3.1 8B Instant) is
+       asked a narrow, structured question — does this specific evidence
+       sentence support this specific claim? This call never sees the
+       original summarization prompt, so it can't just rubber-stamp its
+       own prior output.
     c) Entity check: dosages, lab values, vitals, and dates are extracted
        via regex and must appear verbatim in the source — this overrides
        the entailment score, since numbers are the highest-risk hallucination
@@ -38,9 +44,22 @@ report (PDF or text)
 
 **Why two tiers instead of just asking the LLM to self-check?** Asking a
 model to grade its own output is circular — the same failure mode that
-produced the hallucination can produce a false "looks fine." The NLI model
-never saw the summarization prompt, and the entity check is pure string
-matching with no model involved at all. That independence is the point.
+produced the hallucination can produce a false "looks fine." The entity
+check is pure string matching with no model involved at all, and the
+entailment check is a structurally separate call with no memory of the
+summarization step. That independence is the point.
+
+**Note on the entailment model:** this originally used a dedicated NLI
+model (DeBERTa-v3) hosted on Hugging Face's free Inference API. That
+service was deprecated mid-project (the old `api-inference.huggingface.co`
+endpoint stopped resolving, and the replacement `router.huggingface.co`
+doesn't host small classification models reliably on the free tier) — so
+the entailment check was switched to a second, isolated Groq call instead.
+This is a legitimate and common alternative technique, but it's worth
+being upfront that it's not the same as a purpose-built, independently
+trained NLI classifier — both calls ultimately run on Llama models, even
+though the prompts, context, and roles are fully separate. See "For the
+viva" below for how to talk about this tradeoff.
 
 ## Project structure — two separate Vercel projects
 
@@ -50,11 +69,11 @@ report-trace/
     main.py                    FastAPI app (Vercel entrypoint)
     app/
       summarizer.py             Groq API call, structured sentence output
-      hallucination_detector.py TF-IDF retrieval + HF Inference API + entity check
+      hallucination_detector.py TF-IDF retrieval + Groq verifier + entity check
       utils.py                  PDF extraction, regex sentence splitter, entity regex
       schemas.py                Pydantic request/response models
     requirements.txt
-    vercel.json                 maxDuration config
+    vercel.json
     .env.example
   frontend/
     src/
@@ -64,54 +83,43 @@ report-trace/
     vite.config.js
 ```
 
-Backend and frontend deploy as **two independent Vercel projects** from this
-one repo, each with its own "Root Directory" setting. This is the standard,
-predictable way to run a Python API alongside a static frontend on Vercel —
-no monorepo routing config to get right, and each half can be redeployed or
-debugged on its own.
+Backend and frontend deploy as **two independent Vercel projects** from
+this one repo, each with its own "Root Directory" setting — `backend` and
+`frontend` respectively. This avoids monorepo routing configuration
+entirely and lets each half be redeployed or debugged independently.
 
-## Deploying
+## Deploying your own copy
 
 ### 1. Backend
-
-- Push this repo to GitHub.
-- In Vercel: **New Project** → import the repo → set **Root Directory** to `backend`.
-- Vercel auto-detects the FastAPI/Python framework from `requirements.txt` + `main.py`.
-- Add environment variables in the project's Settings → Environment Variables:
-  - `GROQ_API_KEY` — your Groq API key (get one at [console.groq.com](https://console.groq.com))
-  - `HF_API_TOKEN` — a free Hugging Face access token ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens), "Read" scope is enough)
+- Vercel → **New Project** → import this repo → **Root Directory** = `backend`
+- Environment variables:
+  - `GROQ_API_KEY` — free at console.groq.com (no card required)
+  - `FRONTEND_ORIGIN` — set to your frontend's URL once deployed (step 2), for CORS
+  - `VERIFIER_MODEL` (optional, defaults to `llama-3.1-8b-instant`)
   - `SUMMARY_MODEL` (optional, defaults to `llama-3.3-70b-versatile`)
-  - `NLI_MODEL` (optional, defaults to the DeBERTa-v3 MNLI model)
-  - `FRONTEND_ORIGIN` — set once you know it, e.g. `https://report-trace.vercel.app` (leave unset / `*` while testing)
-- Deploy. Note the resulting URL, e.g. `https://report-trace-api.vercel.app`.
-
-**Heads up on the free HF Inference API:** the first call to a model that
-hasn't been used recently can return a 503 while it spins up — the backend
-already retries with a short wait for this. If a model is unavailable or
-your token has hit a rate limit, `_entailment_score` degrades to `0.0`
-rather than failing the whole request; the entity check still runs.
+- **Deployment Protection** must be turned off (Settings → Deployment
+  Protection → "Require Log In" → off), otherwise the frontend's requests
+  get redirected to a login page instead of reaching the API.
 
 ### 2. Frontend
-
-- In Vercel: **New Project** → import the same repo → set **Root Directory** to `frontend`.
-- Add environment variable:
-  - `VITE_API_BASE` = your backend URL from step 1, e.g. `https://report-trace-api.vercel.app`
-- Deploy.
+- Vercel → **New Project** → import the same repo → **Root Directory** = `frontend`
+- Environment variable: `VITE_API_BASE` = your backend's URL from step 1
+- Vite bakes env vars in at **build time** — if you change this after the
+  first deploy, you must trigger a fresh deployment for it to take effect.
 
 ### Local development
-
 ```bash
 # backend
 cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in GROQ_API_KEY and HF_API_TOKEN
-python main.py          # runs on http://localhost:8000
+cp .env.example .env   # fill in GROQ_API_KEY
+python main.py          # http://localhost:8000
 
 # frontend (separate terminal)
 cd frontend
 npm install
-npm run dev              # runs on http://localhost:5173, defaults to localhost:8000 backend
+npm run dev              # http://localhost:5173
 ```
 
 ## Extending this for the viva
@@ -123,36 +131,40 @@ Things worth being able to speak to:
   why a sentence was picked as evidence. Swapping in embeddings is a
   natural "future work" point, trading transparency for better semantic
   matching.
-- **Why a hosted NLI model instead of running it locally?** This is the
-  actual deployment constraint that shaped the architecture: Vercel
-  serverless functions cap out at 500MB, and `torch` + `transformers` +
-  a DeBERTa checkpoint blow past that on their own. Calling a hosted
-  inference API keeps the function small and fast to cold-start, at the
-  cost of a network round-trip per check and a dependency on a third
-  party's uptime — a real, discussable tradeoff.
+- **Why a second LLM call instead of a dedicated NLI classifier?** The
+  original design used a purpose-trained entailment model (DeBERTa-v3 on
+  MNLI/FEVER/ANLI) via Hugging Face's hosted Inference API. That service
+  was deprecated during development, so this was replaced with an
+  isolated Groq call using a narrow, structured prompt. The honest
+  tradeoff: a dedicated classifier is architecturally more independent
+  (different training objective, not just a different prompt); an LLM
+  call is more flexible but shares underlying model family with the
+  summarizer, so the independence comes from prompt/context isolation
+  rather than model diversity. Worth naming as a design compromise, not
+  hiding it.
 - **Why regex for entities and not a medical NER model** (e.g. scispaCy)?
   Regex is deterministic and auditable, which matters when you're the one
   defending false positives/negatives in a viva. A NER model would catch
-  drug names and conditions the regex misses — another natural "future
-  work" point.
+  drug names and conditions the regex misses — a natural "future work"
+  point.
 - **Why regex sentence splitting instead of nltk?** nltk's tokenizer needs
   to download its punkt model on first use, which is a poor fit for a
   serverless cold start (no guaranteed writable cache, added latency). The
   regex splitter trades some accuracy on edge cases (unusual abbreviations)
   for zero runtime dependencies.
-- **Failure modes worth naming:** the entailment model can be fooled by
+- **Failure modes worth naming:** the entailment call can be fooled by
   sentences that are topically similar but logically unsupported; the
   entity regex won't catch a hallucinated drug *name* (only malformed
   numbers/dates); TF-IDF retrieval can miss evidence if the summary
-  paraphrases heavily; the hosted NLI call adds latency and an external
-  dependency compared to an in-process model.
+  paraphrases heavily; both LLM calls depend on Groq's uptime and rate
+  limits.
 
 ## Notes
 
 - Only PDF and pasted text are supported for input right now.
 - The confidence score is `(supported + 0.5·partial) / total_claims` — a
   simple, explainable weighting, not a learned metric.
-- Vercel's Hobby plan caps function duration at 60s (already set in
-  `vercel.json`); a long report with many summary sentences, each needing
-  an HF API round-trip, can approach that. Keep `max_summary_sentences`
-  modest (the default of 8) for a smooth demo.
+- Tested end-to-end with both pasted text and PDF upload (a synthetic lab
+  report with vitals/labs tables), producing correctly traced, high-
+  confidence summaries with appropriate partial/unsupported flags on
+  genuinely ambiguous merges.
