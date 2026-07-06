@@ -24,6 +24,37 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug_groq_verify")
+def debug_groq_verify():
+    import requests as req
+    groq_key = os.environ.get("GROQ_API_KEY")
+    model = os.environ.get("VERIFIER_MODEL", "llama-3.1-8b-instant")
+    url = "https://api.groq.com/openai/v1/chat/completions"
+
+    headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Return ONLY JSON: {\"entailment_score\": <0.0-1.0>}"},
+            {"role": "user", "content": "SOURCE: The sky is blue.\n\nCLAIM: The sky has a blue color."},
+        ],
+        "temperature": 0,
+        "max_tokens": 50,
+        "response_format": {"type": "json_object"},
+    }
+
+    try:
+        resp = req.post(url, headers=headers, json=payload, timeout=20)
+        return {
+            "status_code": resp.status_code,
+            "response_body": resp.text[:1000],
+            "rate_limit_remaining": resp.headers.get("x-ratelimit-remaining-requests"),
+            "rate_limit_reset": resp.headers.get("x-ratelimit-reset-requests"),
+        }
+    except Exception as e:
+        return {"exception": f"{type(e).__name__}: {e}"}
+
+
 @app.post("/summarize", response_model=SummarizeResponse)
 async def summarize(
     file: UploadFile = File(None),
